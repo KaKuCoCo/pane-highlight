@@ -34,7 +34,7 @@ local LOOKUP_TIMEOUT_MS = 1500
 -- A directory change this soon after a command started or ended belongs to that command.
 local CWD_GUARD_MS = 1000
 local DUPLICATE_MS = 100 -- the same start reported again this soon is one start
-local MAX_WINDOWS = 9 -- window keys tried by `tern process --window N`
+local MAX_WINDOWS = 9 -- window keys tried by `tern process ID --window N`
 -- An app started from the Dock may not have `tern` on its PATH.
 local TERN_PROGRAMS = { "tern", "/Applications/Tern.app/Contents/MacOS/tern", "/usr/bin/tern" }
 -- Options taking a value, so their value is not taken for the destination or command.
@@ -486,11 +486,14 @@ type Lookup = "missing" | "own" | "other"
 local known_window: number? = nil
 local function foreground(pane_id: number, cx: WindowCx, done: (Target?, Lookup, WindowCx) -> ())
 	local function ask(program: string, window: number, ask_cx: WindowCx, remembered: boolean): boolean
-		local args = { program, "process", tostring(pane_id), "--json" }
+		-- `--window` goes after the verb: before it, tern takes the arguments for a window
+		-- launch and opens them as paths in the plugin folder.
+		local args = { program, "process", tostring(pane_id) }
 		if window > 0 then
-			table.insert(args, 2, "--window")
-			table.insert(args, 3, tostring(window))
+			table.insert(args, "--window")
+			table.insert(args, tostring(window))
 		end
+		table.insert(args, "--json")
 		return pcall(
 			tern.process.run,
 			args :: { string },

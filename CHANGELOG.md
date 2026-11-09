@@ -2,6 +2,10 @@
 
 changes users see, newest first. the version is `version` in `plugin.toml`.
 
+## 0.2.1 - 2026-11-09
+
+- fixes the "Couldn't open what Tern was started with" error on focus and commands: the window lookup put `--window` before `process`, so tern opened a window with the arguments as paths in the plugin folder
+
 ## 0.2.0 - 2026-10-22
 
 - new `single` config switch: also mark a pane shown alone, the only pane of a tab or a zoomed one. off by default; with it on, a single pane gets the border, the opaque tint and rule colors, so it stands out of a translucent window

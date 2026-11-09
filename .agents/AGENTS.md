@@ -15,6 +15,7 @@ windows and the cli
 - a pane of another window, or an unknown window key, gives the same error: `no block is called <id>`, status 1
 - the first window's panes have an empty `TERN_WINDOW_KEY` and are reached only without `--window` (`--window 1` is not it). windows opened later had keys like `2`. so the plugin asks without `--window`, then `--window 1..9`, until status 0
 - pane ids differed across windows in every check; the docs do not promise it
+- tern 0.9.13: `--window KEY` must follow the verb (`tern process ID --window 1`). before it (`tern --window 1 process ID`) tern launches a window, opens the arguments as paths relative to the cwd (the plugin folder) and shows "Couldn't open what Tern was started with", yet exits 0
 - `tern split ... --json` prints `{session, tab, block}`: the new id is `block`, not `id`
 - tern 0.7.2 (5d1cc64), proven: in windows 2 and 3, `cx.session:pane(cx.session:focused())` is nil; `cx.session:pane("@focused")` and `cx.session:panes()` list the same id. example: window half `6180457938948` (0x59f00000004), cli `23772643983364` (0x159f00000004), and `tern process --window 2 6180457938948` says `no block is called`. a cli/window id difference alone is documented (remote host tag moved from bit 56 to bit 44, `docs/tern/concepts/runtime.md`); the nil round trip is the defect. hypotheses, not verified: it hits all panes with cli id ≥ 2^44, also in window 1, and those are panes made after a tern start
 
