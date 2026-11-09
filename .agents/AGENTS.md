@@ -19,6 +19,15 @@ windows and the cli
 - `tern split ... --json` prints `{session, tab, block}`: the new id is `block`, not `id`
 - tern 0.7.2 (5d1cc64), proven: in windows 2 and 3, `cx.session:pane(cx.session:focused())` is nil; `cx.session:pane("@focused")` and `cx.session:panes()` list the same id. example: window half `6180457938948` (0x59f00000004), cli `23772643983364` (0x159f00000004), and `tern process --window 2 6180457938948` says `no block is called`. a cli/window id difference alone is documented (remote host tag moved from bit 56 to bit 44, `docs/tern/concepts/runtime.md`); the nil round trip is the defect. hypotheses, not verified: it hits all panes with cli id ≥ 2^44, also in window 1, and those are panes made after a tern start
 
+tern 0.9.13, plugin sheets (checked in `tern serve`, whose errors list names each drop)
+
+- not supported: `@property` (custom properties do not animate), `border-image`, `conic-gradient` (also in `mask`). supported and used: layered `linear-gradient` backgrounds, `background-size`/`box-shadow` keyframes, `light-dark()`, `color-mix()`, relative `oklch(from …)`
+- tern's focus line is `.tn-body::before` (`.tn-head::before` when headed) on `.multi:is(.on, .was)`, animated by `.go-l|go-r|go-c` with `tnFocusIn`/`tnFocusOut` 0.26 s; `.tn-body::after` is free except for the bell flash. pane corners follow the layout (`lay-tiles`, islands round; studio square): overlays take `border-radius: inherit`, as tern's own do
+- `string.format` on the sheet template: any literal `%` in css must be `%%`
+- `tern ctl css` may not list a plugin sheet for a while after a reload although it applies; check the rendered result (`dump`, `shot`) instead
+- `tern process` on Windows: `argv` empty for every process; `tern.process.run` spawns on the UI thread (about 5 ms, now and then about 200 ms)
+- `serve` loads no plugins: test a plugin's css there by rendering the template and `ctl css NAME FILE`
+
 commands and ssh
 
 - `tern process --window K <pane> --json` gives `foreground.argv`, e.g. `ssh user@host`, for the whole ssh session

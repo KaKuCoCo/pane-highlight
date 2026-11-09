@@ -2,6 +2,16 @@
 
 changes users see, newest first. the version is `version` in `plugin.toml`.
 
+## 0.3.0 - 2026-11-09
+
+- new `color` config key: the active pane's color when no rule matches, instead of the accent
+- new `wallpaper` config switch: takes colors from the wallpaper plugin's picture. the most vivid one becomes the default color, and each built-in palette color moves to the wallpaper color nearest in hue, unless none is near
+- `animation` selects tern's top-line sweep in the highlight color (`default`, no side frame) or the whole frame with a short glow (`glow`); command palette rows `Pane Highlight: animation …` switch it live, and the choice is kept until `animation` in `config.json` changes
+- wallpaper colors fall back to the theme accent when the wallpaper is disabled or its image palette is not ready
+- smoother focus moves: the pane keeps its last color at once, and the `tern process` lookup waits until focus has stayed 300 ms, past tern's focus sweep. quick switching spawns one lookup instead of one per pane passed
+- `"rules": []` turns rule colors off and skips command-line parsing and the `tern process` lookup entirely
+- wallpaper colors come from the picture itself on Windows (`analyze.ps1`), ranked like Material You's Material Color Utilities Score and re-toned per theme, so the border is readable on any picture; elsewhere the wallpaper plugin's palette feeds the same ranking
+
 ## 0.2.1 - 2026-11-09
 
 - fixes the "Couldn't open what Tern was started with" error on focus and commands: the window lookup put `--window` before `process`, so tern opened a window with the arguments as paths in the plugin folder

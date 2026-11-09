@@ -29,8 +29,26 @@ local DEFAULT_RULES: { Rule } = {
 	{ host = "dev-*", color = "mint" },
 }
 
+-- `wallpaper: true` takes its colors from the wallpaper plugin's picture.
+local WALLPAPER_KV = tern.plugin.data .. "/../wallpaper/kv.json"
+local WALLPAPER_MAX_BYTES = 16 * 1024 * 1024 -- the file also holds the rendered picture
+local ANALYZE_TIMEOUT_MS = 15000 -- analyze.ps1: about 1 s under pwsh, 1.5 s under Windows PowerShell
+-- Material Color Utilities' Score: HCT chroma under this is grey, and a hue covering no more
+-- than this share of the picture (counting 15 degrees each side) is too rare to theme with.
+local SCORE_MIN_CHROMA = 5
+local SCORE_MIN_SHARE = 0.01
+local SCORE_TARGET_CHROMA = 48
+-- Material You keeps the chosen color's hue and chroma at a lightness made for the theme:
+-- OKLCH lightness near the tone 40 and tone 80 primaries of light and dark schemes.
+local TONE_LIGHT = 0.5
+local TONE_DARK = 0.8
+local MAX_HUE_GAP = 40 -- HCT degrees a palette color may move to reach a picture color
+
 local CONFIG_MAX_BYTES = 64 * 1024
 local LOOKUP_TIMEOUT_MS = 1500
+-- A focus move looks the pane up this long after focus stops moving: past tern's 260 ms
+-- focus sweep, so the `tern process` spawn on the UI thread never lands mid-animation.
+local FOCUS_SETTLE_MS = 300
 -- A directory change this soon after a command started or ended belongs to that command.
 local CWD_GUARD_MS = 1000
 local DUPLICATE_MS = 100 -- the same start reported again this soon is one start
@@ -65,8 +83,14 @@ local SUDO_VALUE_OPTS: { [string]: boolean } = {
 local config_path = tern.plugin.data .. "/config.json"
 local tint_light, tint_dark = DEFAULT_TINT_LIGHT, DEFAULT_TINT_DARK
 local border, dim, single = DEFAULT_BORDER, DEFAULT_DIM, DEFAULT_SINGLE
+-- The focus-move animations, by config name.
+local ANIMATIONS: { [string]: boolean } = { default = true, glow = true }
+local animation = "default"
 local colors: { [string]: string } = table.clone(PALETTE)
+local user_colors: { [string]: boolean } = {}
 local rules: { Rule } = DEFAULT_RULES
+local user_color: string? = nil
+local from_wallpaper = false
 
 local function fail(message: string): never
 	error(config_path .. ": " .. message)
@@ -97,9 +121,16 @@ if tern.fs.exists(config_path) then
 	if user_single ~= nil then
 		single = user_single
 	end
+	animation = expect(config.animation, "string", "animation") or animation
+	if not ANIMATIONS[animation] then
+		fail("animation must be default or glow")
+	end
 	for name, value in expect(config.colors, "table", "colors") or {} do
 		colors[name] = expect(value, "string", "colors." .. tostring(name))
+		user_colors[name] = true
 	end
+	user_color = expect(config.color, "string", "color")
+	from_wallpaper = expect(config.wallpaper, "boolean", "wallpaper") or false
 	local user_rules = expect(config.rules, "table", "rules")
 	if user_rules then
 		rules = {}
@@ -118,6 +149,238 @@ if tern.fs.exists(config_path) then
 		end
 	end
 end
+
+-- A palette choice wins until config.json's own `animation` changes.
+local config_animation = animation
+local saved_animation = tern.kv.get("animation")
+if type(saved_animation) == "string" and ANIMATIONS[saved_animation]
+	and tern.kv.get("animation_config") == config_animation then
+	animation = saved_animation
+end
+
+-- Wallpaper -----------------------------------------------------------------
+
+type Swatch = { hex: string, count: number }
+type Scored = { hex: string, hue: number, chroma: number, score: number }
+
+-- CAM16 under Material Color Utilities' default viewing conditions (ViewingConditions.DEFAULT).
+local VC_N, VC_AW, VC_NBB = 0.18418651851244416, 29.980997194447333, 1.0169191804458755
+local VC_C, VC_NC, VC_FL, VC_Z = 0.69, 1.0, 0.3884814537800353, 1.909169568483652
+local VC_RGB_D = { 1.0211777028, 0.9863077294, 0.9339605083 }
+
+local function linear100(v: number): number
+	v /= 255
+	return 100 * (if v <= 0.04045 then v / 12.92 else ((v + 0.055) / 1.055) ^ 2.4)
+end
+
+local function adapted(cone: number, d: number): number
+	local v = d * cone
+	local af = (VC_FL * math.abs(v) / 100) ^ 0.42
+	return math.sign(v) * 400 * af / (af + 27.13)
+end
+
+-- HCT hue and chroma of a `#rrggbb` color, as Material Color Utilities computes them.
+local function hct(hex: string): (number?, number?)
+	local rh, gh, bh = hex:match("^#(%x%x)(%x%x)(%x%x)$")
+	if not (rh and gh and bh) then
+		return nil, nil
+	end
+	local r, g, b = linear100(tonumber(rh, 16) :: number), linear100(tonumber(gh, 16) :: number), linear100(tonumber(bh, 16) :: number)
+	local x = 0.41233895 * r + 0.35762064 * g + 0.18051042 * b
+	local y = 0.2126 * r + 0.7152 * g + 0.0722 * b
+	local z = 0.01932141 * r + 0.11916382 * g + 0.95034478 * b
+	local ra = adapted(0.401288 * x + 0.650173 * y - 0.051461 * z, VC_RGB_D[1])
+	local ga = adapted(-0.250268 * x + 1.204414 * y + 0.045854 * z, VC_RGB_D[2])
+	local ba = adapted(-0.002079 * x + 0.048952 * y + 0.953127 * z, VC_RGB_D[3])
+	local a = (11 * ra - 12 * ga + ba) / 11
+	local bb = (ra + ga - 2 * ba) / 9
+	local u = (20 * ra + 20 * ga + 21 * ba) / 20
+	local p2 = (40 * ra + 20 * ga + ba) / 20
+	local hue = math.deg(math.atan2(bb, a)) % 360
+	local j = 100 * (p2 * VC_NBB / VC_AW) ^ (VC_C * VC_Z)
+	local e_hue = 0.25 * (math.cos(math.rad(if hue < 20.14 then hue + 360 else hue) + 2) + 3.8)
+	local t = 50000 / 13 * e_hue * VC_NC * VC_NBB * math.sqrt(a * a + bb * bb) / (u + 0.305)
+	return hue, t ^ 0.9 * (1.64 - 0.29 ^ VC_N) ^ 0.73 * math.sqrt(j / 100)
+end
+
+local function hue_gap(a: number, b: number): number
+	local d = math.abs(a - b) % 360
+	return math.min(d, 360 - d)
+end
+
+-- Material Color Utilities' Score: drop grey colors and hues too rare in the picture, then rank
+-- by the share of the picture around each hue and by chroma. Best first.
+local function score(swatches: { Swatch }): { Scored }
+	local measured: { { hex: string, hue: number, chroma: number } } = {}
+	local hue_count = table.create(360, 0)
+	local total = 0
+	for _, s in swatches do
+		local hue, chroma = hct(s.hex)
+		if hue and chroma then
+			table.insert(measured, { hex = s.hex, hue = hue, chroma = chroma })
+			local i = math.floor(hue) % 360 + 1
+			hue_count[i] += s.count
+			total += s.count
+		end
+	end
+	local scored: { Scored } = {}
+	if total == 0 then
+		return scored
+	end
+	local around = table.create(360, 0)
+	for h = 0, 359 do
+		local share = hue_count[h + 1] / total
+		if share > 0 then
+			for i = h - 14, h + 15 do
+				around[i % 360 + 1] += share
+			end
+		end
+	end
+	for _, m in measured do
+		local share = around[math.floor(m.hue + 0.5) % 360 + 1]
+		if m.chroma >= SCORE_MIN_CHROMA and share > SCORE_MIN_SHARE then
+			local weight = if m.chroma < SCORE_TARGET_CHROMA then 0.1 else 0.3
+			table.insert(scored, {
+				hex = m.hex,
+				hue = m.hue,
+				chroma = m.chroma,
+				score = share * 100 * 0.7 + (m.chroma - SCORE_TARGET_CHROMA) * weight,
+			})
+		end
+	end
+	table.sort(scored, function(p, q)
+		return p.score > q.score
+	end)
+	return scored
+end
+
+local function retone(hex: string): string
+	return string.format("light-dark(oklch(from %s %g c h), oklch(from %s %g c h))", hex, TONE_LIGHT, hex, TONE_DARK)
+end
+
+-- The wallpaper plugin's state from its kv, reading only the small string fields, not the
+-- base64 picture stored beside them. nil when the wallpaper is off or has no picture.
+type WallpaperState = { source: string, palette: string?, sig: string?, colors: string? }
+local function read_wallpaper(): WallpaperState?
+	if not tern.fs.exists(WALLPAPER_KV) then
+		tern.log.warn("pane-highlight: wallpaper: no " .. WALLPAPER_KV)
+		return nil
+	end
+	local ok, text = pcall(tern.fs.read, WALLPAPER_KV, WALLPAPER_MAX_BYTES)
+	if not ok then
+		return nil
+	end
+	local function value_start(name: string): number?
+		local _, last = text:find('"' .. name .. '"', 1, true)
+		if not last then
+			return nil
+		end
+		return text:match("^%s*:%s*()", last + 1)
+	end
+	local enabled = value_start("enabled")
+	if enabled and text:sub(enabled, enabled + 4) == "false" then
+		return nil
+	end
+	local function field(name: string): string?
+		local opening = value_start(name)
+		if not opening or text:sub(opening, opening) ~= '"' then
+			return nil
+		end
+		local pos = opening + 1
+		while true do
+			local quote = text:find('"', pos, true)
+			if not quote then
+				return nil
+			end
+			local backslashes, i = 0, quote - 1
+			while i > opening and text:sub(i, i) == "\\" do
+				backslashes += 1
+				i -= 1
+			end
+			if backslashes % 2 == 0 then
+				local decoded, value = pcall(tern.json.decode, text:sub(opening, quote))
+				return if decoded and type(value) == "string" then value else nil
+			end
+			pos = quote + 1
+		end
+	end
+	local source = field("source")
+	if not source or source == "" then
+		return nil
+	end
+	return { source = source, palette = field("palette"), sig = field("sig"), colors = field("colors") }
+end
+
+-- Where analyze.ps1 cannot run: the colors the wallpaper plugin took from this picture
+-- (Image colours palette, rendered from this source), each counted once.
+local function palette_swatches(state: WallpaperState): { Swatch }
+	local found: { Swatch } = {}
+	local sig = state.sig
+	if state.palette ~= "auto" or not sig then
+		return found
+	end
+	local prefix = sig:match("^[^|]*|")
+	local render = if prefix then prefix .. state.source .. "|" else nil
+	if not render or sig:sub(1, #render) ~= render or not sig:sub(#render + 1):match("^[^|]*|auto|") then
+		tern.log.warn("pane-highlight: wallpaper colors are not ready; reload after the render completes")
+		return found
+	end
+	for hex in (state.colors or ""):gmatch("#%x%x%x%x%x%x") do
+		table.insert(found, { hex = hex, count = 1 })
+	end
+	return found
+end
+
+-- Windows: analyze.ps1 reads the picture itself in its own process; done gets its colors with
+-- their pixel counts, or nil when it could not run.
+local function analyze_picture(source: string, done: ({ Swatch }?) -> ())
+	local script = tern.plugin.dir .. "/analyze.ps1"
+	local function run(shell: string): boolean
+		return pcall(
+			tern.process.run,
+			{ shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Path", source },
+			{ timeout_ms = ANALYZE_TIMEOUT_MS, cwd = tern.plugin.data },
+			function(res: ProcessResult)
+				if res.status ~= 0 then
+					tern.log.warn("pane-highlight: picture analysis failed: " .. (res.stderr or ""):sub(1, 300))
+					done(nil)
+					return
+				end
+				local found: { Swatch } = {}
+				for hex, count in res.stdout:gmatch("(%x%x%x%x%x%x) (%d+)") do
+					table.insert(found, { hex = "#" .. hex:lower(), count = tonumber(count) :: number })
+				end
+				done(found)
+			end
+		)
+	end
+	-- PowerShell 7 starts in about half the time Windows PowerShell takes.
+	if not (run("pwsh") or run("powershell.exe")) then
+		done(nil)
+	end
+end
+
+-- The best-scored picture color, re-toned, or nil; each built-in palette color the user did not
+-- set moves to the scored color nearest in HCT hue, unless none is near: no red keeps red.
+local function take_picture_colors(swatches: { Swatch }): string?
+	local scored = score(swatches)
+	for name, hex in PALETTE do
+		local own = hct(hex)
+		if own and not user_colors[name] then
+			local best, gap = nil, MAX_HUE_GAP
+			for _, s in scored do
+				local d = hue_gap(own, s.hue)
+				if d <= gap then
+					best, gap = s.hex, d
+				end
+			end
+			colors[name] = if best then retone(best) else hex
+		end
+	end
+	return if scored[1] then retone(scored[1].hex) else nil
+end
+
+local default_color = if user_color then colors[user_color] or user_color else DEFAULT_COLOR
 
 -- Matching ------------------------------------------------------------------
 
@@ -339,15 +602,60 @@ end
 -- tern.css replaces the whole sheet and restyles the window, so only on a change.
 -- The tint is an opaque background: the active pane stands out of a translucent window.
 -- Tern marks the active pane `.on`; `.multi` while the tab shows more than one pane.
+-- Tern owns the top-line sweep; the other edges use the body overlay.
 local ACTIVE = if single then ".tn-stage .tn-pane.on" else ".tn-stage .tn-pane.on.multi"
 local shown: string? = nil
+local shown_animation: string? = nil
+local ANIMATION_CSS: { [string]: string } = {
+	glow = [[
+	.tn-stage .tn-pane.multi:is(.on, .was):not(.headed) > .tn-body::before {
+		display: none !important;
+	}
+	.tn-stage .tn-pane.multi.on:not(.headed):not(.bell) > .tn-body::after {
+		box-shadow: inset 0 0 0 var(--ph-border) var(--ph-color);
+	}
+	.tn-stage .tn-pane.multi.on:is(.go-l, .go-r, .go-c):not(.headed):not(.bell) > .tn-body::after {
+		animation: phGlow 0.4s ease-out both;
+	}
+	@keyframes phGlow {
+		0% { box-shadow: inset 0 0 0 var(--ph-border) var(--ph-color), inset 0 0 14px 0 var(--ph-color); }
+		100% { box-shadow: inset 0 0 0 var(--ph-border) var(--ph-color), inset 0 0 0 0 transparent; }
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.tn-stage .tn-pane.multi.on:not(.headed):not(.bell) > .tn-body::after { animation: none; }
+	}
+]],
+	default = "",
+}
+-- glow frames all four edges; default leaves the sides alone, as tern does.
+local FRAME_CSS = [[
+	.tn-stage .tn-pane.multi:is(.on, .was):not(.headed):not(.bell) > .tn-body::after {
+		box-shadow:
+			inset var(--ph-border) 0 0 0 var(--ph-color),
+			inset calc(-1 * var(--ph-border)) 0 0 0 var(--ph-color),
+			inset 0 calc(-1 * var(--ph-border)) 0 0 var(--ph-color);
+	}
+	ACTIVE.headed .tn-head {
+		box-shadow:
+			inset 0 var(--ph-border) 0 0 var(--ph-color),
+			inset var(--ph-border) 0 0 0 var(--ph-color),
+			inset calc(-1 * var(--ph-border)) 0 0 0 var(--ph-color),
+			inset 0 -1px 0 var(--l1) !important;
+	}
+	ACTIVE.headed .tn-body {
+		box-shadow:
+			inset 0 calc(-1 * var(--ph-border)) 0 0 var(--ph-color),
+			inset var(--ph-border) 0 0 0 var(--ph-color),
+			inset calc(-1 * var(--ph-border)) 0 0 0 var(--ph-color) !important;
+	}
+]]
 local function set_style(color: string)
-	if color == shown then
+	if color == shown and animation == shown_animation then
 		return
 	end
-	shown = color
+	shown, shown_animation = color, animation
 	local template = [[
-		ACTIVE {
+		.tn-stage {
 			--ph-border: %gpx;
 			--ph-color: %s;
 			--ph-bg: light-dark(
@@ -356,33 +664,63 @@ local function set_style(color: string)
 			);
 		}
 		ACTIVE:not(.headed) .tn-body {
-			box-shadow: inset 0 0 0 var(--ph-border) var(--ph-color) !important;
 			background: var(--ph-bg) !important;
+		}
+		ACTIVE:not(.headed):not(.multi) .tn-body {
+			box-shadow: inset 0 0 0 var(--ph-border) var(--ph-color) !important;
+		}
+		.tn-stage .tn-pane.multi:is(.on, .was) > :is(.tn-head, .tn-body)::before {
+			background: var(--ph-color) !important;
+			height: var(--ph-border) !important;
+			opacity: 1 !important;
+		}
+		.tn-stage .tn-pane.multi:is(.on, .was):not(.headed):not(.bell) > .tn-body::after {
+			content: '';
+			position: absolute;
+			inset: 0;
+			z-index: 7;
+			pointer-events: none;
+			border-radius: inherit;
+		}
+		.tn-stage .tn-pane.multi.was:not(.headed):not(.bell) > .tn-body::after {
+			opacity: 0;
 		}
 		ACTIVE.headed :is(.tn-head, .tn-body) {
 			background: var(--ph-bg) !important;
 		}
-		ACTIVE.headed .tn-head {
-			box-shadow:
-				inset 0 var(--ph-border) 0 0 var(--ph-color),
-				inset var(--ph-border) 0 0 0 var(--ph-color),
-				inset calc(-1 * var(--ph-border)) 0 0 0 var(--ph-color),
-				inset 0 -1px 0 var(--l1) !important;
-		}
-		ACTIVE.headed .tn-body {
-			box-shadow:
-				inset 0 calc(-1 * var(--ph-border)) 0 0 var(--ph-color),
-				inset var(--ph-border) 0 0 0 var(--ph-color),
-				inset calc(-1 * var(--ph-border)) 0 0 0 var(--ph-color) !important;
-		}
 		.tn-stage .tn-pane.dim .tn-veil {
 			opacity: %g !important;
 		}
+		@media (prefers-reduced-motion: reduce) {
+			.tn-stage .tn-pane.multi:is(.on, .was) > :is(.tn-head, .tn-body)::before {
+				animation: none !important;
+			}
+			.tn-stage .tn-pane.multi.was > :is(.tn-head, .tn-body)::before {
+				opacity: 0 !important;
+			}
+		}
 	]]
 	-- The selector goes in before the colors, so no color text is rewritten.
+	local sheet = template .. (if animation == "default" then "" else FRAME_CSS)
 	local css =
-		string.format((template:gsub("ACTIVE", ACTIVE)), border, color, color, tint_light, color, tint_dark, dim)
+		string.format((sheet:gsub("ACTIVE", ACTIVE)), border, color, color, tint_light, color, tint_dark, dim)
+		.. ANIMATION_CSS[animation]
 	tern.css("pane-highlight", css)
+end
+
+for _, kind in { "default", "glow" } do
+	tern.command({
+		id = "animation-" .. kind,
+		title = "Pane Highlight: animation " .. kind,
+		icon = "sliders",
+		run = function(cx)
+			animation = kind
+			tern.kv.set("animation", kind)
+			tern.kv.set("animation_config", config_animation)
+			set_style(shown or default_color)
+			cx:toast("info", "Pane Highlight animation: " .. kind)
+		end,
+	})
 end
 
 -- Panes ---------------------------------------------------------------------
@@ -540,7 +878,8 @@ end
 -- Only the focused pane shows a rule color, so only it is checked; focus checks again.
 -- line: the command line just started (event); nil reads the pane's running line.
 local function update(cx: WindowCx, pane_id: number, line: string?)
-	if cx.session:focused() ~= pane_id then
+	-- `rules: []` turns rule colors off: nothing to match, so no line parsing and no lookup.
+	if #rules == 0 or cx.session:focused() ~= pane_id then
 		return
 	end
 	generation[pane_id] = (generation[pane_id] or 0) + 1
@@ -565,7 +904,7 @@ local function update(cx: WindowCx, pane_id: number, line: string?)
 			table.insert(targets, found)
 		end
 		table.insert(targets, host_target(settle_cx, pane_id))
-		apply(settle_cx, pane_id, color_for(targets) or DEFAULT_COLOR)
+		apply(settle_cx, pane_id, color_for(targets) or default_color)
 	end
 	-- Only terminal, agent and plugin panes run a program; browser, file and the rest have no ssh.
 	local runs = info and (info.kind == "terminal" or info.kind == "agent" or info.kind == "plugin")
@@ -587,11 +926,43 @@ local function update(cx: WindowCx, pane_id: number, line: string?)
 	end)
 end
 
+-- The pane's last color shows at once; its lookup waits until focus settles, and a newer
+-- focus move cancels it, so quick switching spawns one lookup, for the pane it ends on.
+local settle_timer: TimerHandle? = nil
 local function focus(cx: WindowCx)
 	local pane_id = cx.session:focused()
-	set_style(pane_id and pane_color[pane_id] or DEFAULT_COLOR)
-	if pane_id then
-		update(cx, pane_id)
+	set_style(pane_id and pane_color[pane_id] or default_color)
+	if settle_timer then
+		settle_timer:cancel()
+		settle_timer = nil
+	end
+	if pane_id and #rules > 0 then
+		settle_timer = tern.timer(FOCUS_SETTLE_MS, function(settle_cx)
+			settle_timer = nil
+			if settle_cx then
+				update(settle_cx, pane_id)
+			end
+		end)
+	end
+end
+
+-- The picture's colors arrive after load; the configured or theme color shows until then.
+local function use_picture(swatches: { Swatch }?)
+	local picked = if swatches then take_picture_colors(swatches) else nil
+	default_color = if user_color then colors[user_color] or user_color else picked or DEFAULT_COLOR
+	table.clear(pane_color)
+	set_style(default_color)
+end
+
+local function start_wallpaper()
+	local state = if from_wallpaper then read_wallpaper() else nil
+	if not state then
+		return
+	end
+	if tern.runtime.os == "windows" then
+		analyze_picture(state.source, use_picture)
+	else
+		use_picture(palette_swatches(state))
 	end
 end
 
@@ -599,8 +970,9 @@ tern.timer(0, function(cx)
 	if cx then
 		focus(cx)
 	else
-		set_style(DEFAULT_COLOR)
+		set_style(default_color)
 	end
+	start_wallpaper()
 end)
 
 tern.on("focus", function(_ev, cx)
