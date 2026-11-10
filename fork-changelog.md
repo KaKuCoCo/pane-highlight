@@ -2,6 +2,13 @@
 
 本紀錄比較 `olegpulatov/pane-highlight` 與 `KaKuCoCo/pane-highlight` 的 `main` 分支，列出 fork 專屬變更。日期為 Git 作者日期。
 
+## 2026-11-10
+
+- 新增命令面板的壁紙取色開關。
+  - `Pane Highlight: wallpaper colors on` 與 `… off` 不需重新載入即可切換；`on` 會重新讀取圖片，換壁紙後執行即可換色。
+  - 選擇記在 kv，直到 `config.json` 的 `wallpaper` 改變為止，與動畫選項相同。
+  - 原本只能改 `config.json` 再重新載入外掛；圖片分析途中關閉時，不再套用分析結果。
+
 ## 2026-11-09
 
 - 調整 `tern process` 的 `--window` 選項位置。

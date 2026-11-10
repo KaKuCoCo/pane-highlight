@@ -158,6 +158,13 @@ if type(saved_animation) == "string" and ANIMATIONS[saved_animation]
 	animation = saved_animation
 end
 
+-- Likewise for `wallpaper`: the palette's choice wins until config.json's own `wallpaper` changes.
+local config_wallpaper = from_wallpaper
+local saved_wallpaper = tern.kv.get("wallpaper")
+if type(saved_wallpaper) == "boolean" and tern.kv.get("wallpaper_config") == config_wallpaper then
+	from_wallpaper = saved_wallpaper
+end
+
 -- Wallpaper -----------------------------------------------------------------
 
 type Swatch = { hex: string, count: number }
@@ -959,11 +966,43 @@ local function start_wallpaper()
 	if not state then
 		return
 	end
-	if tern.runtime.os == "windows" then
-		analyze_picture(state.source, use_picture)
-	else
-		use_picture(palette_swatches(state))
+	-- Turning the colors off while the picture is still being read must win over its result.
+	local function apply(swatches: { Swatch }?)
+		if from_wallpaper then
+			use_picture(swatches)
+		end
 	end
+	if tern.runtime.os == "windows" then
+		analyze_picture(state.source, apply)
+	else
+		apply(palette_swatches(state))
+	end
+end
+
+-- On reads the picture again, so it also picks up a changed wallpaper without a reload.
+for _, on in { true, false } do
+	local word = if on then "on" else "off"
+	tern.command({
+		id = "wallpaper-" .. word,
+		title = "Pane Highlight: wallpaper colors " .. word,
+		icon = "image",
+		run = function(cx)
+			from_wallpaper = on
+			tern.kv.set("wallpaper", on)
+			tern.kv.set("wallpaper_config", config_wallpaper)
+			if on then
+				start_wallpaper()
+			else
+				for name, hex in PALETTE do
+					if not user_colors[name] then
+						colors[name] = hex
+					end
+				end
+				use_picture(nil)
+			end
+			cx:toast("info", "Pane Highlight wallpaper colors: " .. word)
+		end,
+	})
 end
 
 tern.timer(0, function(cx)
