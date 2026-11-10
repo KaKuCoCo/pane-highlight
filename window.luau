@@ -52,7 +52,6 @@ local FOCUS_SETTLE_MS = 300
 -- A directory change this soon after a command started or ended belongs to that command.
 local CWD_GUARD_MS = 1000
 local DUPLICATE_MS = 100 -- the same start reported again this soon is one start
-local MAX_WINDOWS = 9 -- window keys tried by `tern process ID --window N`
 -- An app started from the Dock may not have `tern` on its PATH.
 local TERN_PROGRAMS = { "tern", "/Applications/Tern.app/Contents/MacOS/tern", "/usr/bin/tern" }
 -- Options taking a value, so their value is not taken for the destination or command.
@@ -819,24 +818,21 @@ local function host_target(cx: WindowCx, pane_id: number): Target
 end
 
 -- The pane's foreground program (`ssh deploy@web1` for a whole ssh session), from `tern process`.
--- The plugin cannot learn its window key, and `tern process` sees one window's panes,
--- so it asks the first window (no `--window`; its panes have an empty key), then keys
--- 1..MAX_WINDOWS, until one knows the pane. Bounded workaround: other keys are not reached.
--- Each window runs its own copy of this plugin, so all its panes share one key: the first
--- hit is remembered and asked first next time; a miss there scans again.
--- done gets the target and a fresh cx, and where the pane stands: "missing" (no window
--- knew it, or no `tern` can start), "own" (the pane's own program, its first shell, is in
+-- `tern process` sees one window's panes, so it is asked for this window's key (`cx:window_key()`;
+-- empty for the first window, which takes no `--window`).
+-- done gets the target and a fresh cx, and where the pane stands: "missing" (the window does not
+-- know the pane, or no `tern` can start), "own" (the pane's own program, its first shell, is in
 -- front: no login runs), "other" (a program it started is in front).
 type Lookup = "missing" | "own" | "other"
-local known_window: number? = nil
 local function foreground(pane_id: number, cx: WindowCx, done: (Target?, Lookup, WindowCx) -> ())
-	local function ask(program: string, window: number, ask_cx: WindowCx, remembered: boolean): boolean
+	local window = cx:window_key()
+	local function ask(program: string): boolean
 		-- `--window` goes after the verb: before it, tern takes the arguments for a window
 		-- launch and opens them as paths in the plugin folder.
 		local args = { program, "process", tostring(pane_id) }
-		if window > 0 then
+		if window ~= "" then
 			table.insert(args, "--window")
-			table.insert(args, tostring(window))
+			table.insert(args, window)
 		end
 		table.insert(args, "--json")
 		return pcall(
@@ -844,18 +840,11 @@ local function foreground(pane_id: number, cx: WindowCx, done: (Target?, Lookup,
 			args :: { string },
 			{ timeout_ms = LOOKUP_TIMEOUT_MS },
 			function(res: ProcessResult, next_cx: WindowCx?)
-				local now_cx = next_cx or ask_cx
+				local now_cx = next_cx or cx
 				if res.status ~= 0 then
-					local next_window = if remembered then 0 else window + 1
-					if remembered then
-						known_window = nil
-					end
-					if next_window > MAX_WINDOWS or not ask(program, next_window, now_cx, false) then
-						done(nil, "missing", now_cx)
-					end
+					done(nil, "missing", now_cx)
 					return
 				end
-				known_window = window
 				local ok_json, data = pcall(tern.json.decode, res.stdout)
 				local fg = ok_json and type(data) == "table" and data.foreground
 				local child = ok_json and type(data) == "table" and data.child
@@ -866,9 +855,7 @@ local function foreground(pane_id: number, cx: WindowCx, done: (Target?, Lookup,
 		)
 	end
 	for _, program in TERN_PROGRAMS do
-		if
-			(program == "tern" or tern.fs.exists(program)) and ask(program, known_window or 0, cx, known_window ~= nil)
-		then
+		if (program == "tern" or tern.fs.exists(program)) and ask(program) then
 			return
 		end
 	end

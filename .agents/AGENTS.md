@@ -10,10 +10,10 @@ observed live with tern 0.7.1 (487bca1); recheck after a tern update.
 
 windows and the cli
 
-- a window half does not know its window key: `tern.getenv("TERN_WINDOW_KEY")` is nil (it reads the daemon's env) and no api field has it
+- a window half learns its window key from `cx:window_key()` (`""` for the first window); `tern.getenv("TERN_WINDOW_KEY")` is nil there (it reads the daemon's env). `tern.process.run` from the window half also passes the key as `TERN_WINDOW_KEY`
 - every `tern` verb works on one window: `--window KEY`, else `$TERN_WINDOW_KEY`, else the first window. a `tern` spawned by `tern.process.run` or from an agent shell without that variable hits the first window
 - a pane of another window, or an unknown window key, gives the same error: `no block is called <id>`, status 1
-- the first window's panes have an empty `TERN_WINDOW_KEY` and are reached only without `--window` (`--window 1` is not it). windows opened later had keys like `2`. so the plugin asks without `--window`, then `--window 1..9`, until status 0
+- the first window's panes have an empty `TERN_WINDOW_KEY` and are reached only without `--window` (`--window 1` is not it). windows opened later had keys like `2`. so the plugin passes `--window` only when `cx:window_key()` is not empty
 - pane ids differed across windows in every check; the docs do not promise it
 - tern 0.9.13: `--window KEY` must follow the verb (`tern process ID --window 1`). before it (`tern --window 1 process ID`) tern launches a window, opens the arguments as paths relative to the cwd (the plugin folder) and shows "Couldn't open what Tern was started with", yet exits 0
 - `tern split ... --json` prints `{session, tab, block}`: the new id is `block`, not `id`

@@ -29,7 +29,7 @@ limits:
 - logins are remembered only while the pane is active, and a plugin reload forgets them
 - inside an ssh session, a remote `sudo -i` or `su` counts while it is the running command or after it was typed in the active pane
 - `tern process` must be on PATH or at its default install path; without it, only the running command line counts
-- a plugin cannot learn its own window key, so the lookup asks the first window, then window keys 1 to 9. panes it cannot find (another window key; on tern 0.7.2 also panes whose id tern rejects) rely on command lines and remembered logins only
+- the lookup asks `tern process` for the window's own key (`cx:window_key()`). panes it cannot find (on tern 0.7.2 also panes whose id tern rejects) rely on command lines and remembered logins only
 - only the active pane gets the rule color; tern gives inactive panes no per-pane style hook
 - sudo's cached password ("no password for 5 minutes") is per terminal and not visible to plugins; a prompt module such as starship's `sudo` shows it
 

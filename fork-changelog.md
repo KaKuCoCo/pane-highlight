@@ -8,6 +8,10 @@
 - 命令面板新增壁紙取色開關（`Pane Highlight: wallpaper colors on/off`）。
   - 原因：原本要改 `config.json` 再重新載入外掛。
 
+### Changed
+- 前景程式查詢改用 `cx:window_key()`，不再逐一嘗試視窗編號 1 到 9。
+  - 原因：`cx:window_key()` 直接提供本視窗的 key；掃描會多開程序，也碰不到編號以外的視窗。
+
 ## 2026-11-09
 
 ### Added

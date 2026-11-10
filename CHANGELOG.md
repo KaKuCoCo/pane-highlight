@@ -5,6 +5,7 @@ changes users see, newest first. the version is `version` in `plugin.toml`.
 ## unreleased
 
 - command palette rows `Pane Highlight: wallpaper colors on` / `… off` switch wallpaper colors live; `on` reads the picture again, so a changed wallpaper needs no reload. the choice is kept until `wallpaper` in `config.json` changes
+- the foreground lookup asks `tern process` with the window's own key (`cx:window_key()`) instead of trying window keys 1 to 9
 
 ## 0.3.0 - 2026-11-09
 
